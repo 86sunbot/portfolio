@@ -67,21 +67,24 @@ flowchart LR
   - *Level 2 (ARM Template Structure):* Validates ARM template schema, parameters, resources, and Logic App workflow definitions (`scripts/validate-templates.js`).
   - *Level 3 (Live Azure ARM Preflight):* Checks RBAC permissions, resource provider registration (`Microsoft.OperationalInsights`, `Microsoft.SecurityInsights`), and quota availability (`modules/`).
 - **Idempotent PowerShell 7 ARM REST Orchestrator (`Deploy-SentinelKit.ps1` & `modules/`):** Modular PowerShell 7 scripts executing ARM REST API calls with `-WhatIf` dry-run support and post-deployment verification (`Test-SentinelDeployment.ps1`).
+- **Consolidated Terraform Greenfield Workspace Module (`terraform/greenfield-workspace/` & `scripts/Enable-LinuxSyslogFacilities.ps1`):** Adapted and sanitized from `86sunbot/Terraform_Sentinel` (`405051c` / `a581dc8`); provisions the Resource Group, `PerGB2018` Log Analytics Workspace, `SecurityInsights` onboarding, native Entra ID / M365 / MDE data connectors, 13 Windows Event Log data sources, optional Key Vault & NSG diagnostic settings (`enabled_metric`), and a custom `DeployIfNotExists` Azure Policy that streams Subscription Activity Logs to Sentinel via a System-Assigned Managed Identity.
 
 ### Maturity / Status
-- **Working Infrastructure-as-Code & Web Orchestrator Prototype (Existing Root `MIT` License Preserved):** Node.js wizard config validator (`validation/config-validator/validator.js`) locally executed; PowerShell Pester suite (`tests/SentinelKit.Tests.ps1`) defined for GitHub Actions CI.
+- **Working Infrastructure-as-Code & Web Orchestrator Prototype (Existing Root `MIT` License Preserved):** Node.js wizard config validator (`validation/config-validator/validator.js`), provider-backed Terraform validation (`terraform fmt -check` & `terraform validate` with `hashicorp/azurerm` v5.9.0), and PowerShell 7 Pester suite (`tests/SentinelKit.Tests.ps1`, `24/24 passed`) all locally executed and published to `origin/main` (`44ca4b0`).
 
 ### Evidence and Limitations
-- **Defined vs. Locally Executed Tests & Validation Scope:**
-  - **Locally Executed (Node.js Wizard Schema Validator & JSON/CSV Parse):** Executed `validation/config-validator/validator.js` via Node.js on `config/examples/enterprise-soc-greenfield.json` (**`valid: true`, `0` L1/L2 errors**) and verified JSON/CSV parsing on `config/sentinel-config.json`, `config/sentinel-config.greenfield.json`, `config/high_value_assets.csv`, and `config/templates/*.json`. Note that the Web UI Wizard schema (`config/examples/enterprise-soc-greenfield.json`, which nests `azure` and `resourceGroup` top-level keys) differs from the PowerShell Kit schema (`config/sentinel-config.json`, which nests `subscriptionId` and `resourceGroupName` under `deployment`).
-  - **Defined for CI / Historical Run (PowerShell Pester v5):** **`23` Pester v5 `It` test blocks are defined** in `tests/SentinelKit.Tests.ps1` (covering PowerShell AST parsing, `PSScriptAnalyzer`, CSV watchlist integrity, and KQL CRLF sanitization). These were **not executed locally** during this review because PowerShell 7 (`pwsh`) is not installed on the local macOS host; they are configured to run on `ubuntu-latest` in `.github/workflows/lint-and-test.yml`.
+- **Locally Executed Validation vs. Unavailable Live-Cloud Checks:**
+  - **Node.js Wizard Schema Validator & JSON/CSV Hygiene:** Executed `validation/config-validator/validator.js` via Node.js on `config/examples/enterprise-soc-greenfield.json` (**`valid: true`, `0` L1/L2 errors**) and verified JSON/CSV parsing on `config/sentinel-config.json`, `config/sentinel-config.greenfield.json`, `config/high_value_assets.csv`, and `config/templates/*.json`. Note that the Web UI Wizard schema (`config/examples/enterprise-soc-greenfield.json`, which nests `azure` and `resourceGroup` top-level keys) differs from the PowerShell Kit schema (`config/sentinel-config.json`, which nests `subscriptionId` and `resourceGroupName` under `deployment`).
+  - **Provider-Backed Terraform Formatting & Schema Validation (`44ca4b0`):** Executed `/opt/homebrew/bin/terraform fmt -check` (0 formatting diffs) and `/opt/homebrew/bin/terraform init -backend=false && /opt/homebrew/bin/terraform validate` (`Terraform v1.15.8` with `hashicorp/azurerm v5.9.0`) across `terraform/greenfield-workspace/` -> **`Success! The configuration is valid.`**
+  - **PowerShell 7 AST, `PSScriptAnalyzer` & Mocked Pester Suite (`44ca4b0`):** Executed `/opt/homebrew/bin/pwsh -NoProfile -Command "Invoke-Pester -Path ./tests/SentinelKit.Tests.ps1 -Output Detailed"` (`PowerShell 7.6.4`, `Pester 6.2.0`, `PSScriptAnalyzer 1.25.0`) -> **`24 passed, 0 failed in 612ms`**, verifying 0 AST parse errors across all 10 `.ps1` files, 0 `Error`-severity `PSScriptAnalyzer` findings, CSV watchlist integrity, KQL CRLF sanitization, and mocked `New-AzOperationalInsightsLinuxSyslogDataSource` execution in `scripts/Enable-LinuxSyslogFacilities.ps1`.
+  - **Unavailable Checks (Not Executed Locally):** Live `terraform plan` / `terraform apply` and live `Deploy-SentinelKit.ps1` execution against an authenticated Azure subscription (`az login` / ARM REST control plane) were not executed in the offline test environment.
 - **Sanitized Synthetic Artifact Provenance:** `artifacts/02_VERIFICATION_REPORT.md` and the three deployment evidence files in `artifacts/deployments/*.json` have been marked with explicit provenance metadata (`ArtifactProvenance: "SYNTHETIC_SANITIZED_SAMPLE"` / `"SYNTHETIC_SANITIZED_REPORT"`, `SanitizedAt: "2026-10-10T00:00:00Z"`) indicating that original subscription names and Azure GUIDs were replaced with synthetic placeholders (`00000000-0000-4000-8000-000000000001`).
 - **Documented Pattern Scan & Identifier vs. Credential Distinction:**
   - *Scan Scope:* Regex pattern scans across `HEAD` and Git history detected **no authentication credentials/secrets**.
   - *Non-Secret Identifiers in Git History:* Earlier commit `00e4c05` on `main` contains **non-secret cloud identifiers** (personal lab Azure Subscription/Tenant GUIDs and subscription display name) plus the deleted 6.2 MB duplicate MP4 blob. Public release requires a clean-history companion repository.
 
 ### Canonical Source & Access Status
-- **Access Status:** **Public case study with implementation currently private** (`86sunbot/Sentinel-as-a-Service`, prepared on local branch `portfolio/remediation-2026-10` at commit `f6e561d`).
+- **Access Status:** **Public case study with implementation currently private** (`86sunbot/Sentinel-as-a-Service` on `origin/main` at commit `44ca4b0`, 58 files).
 
 ---
 
@@ -126,25 +129,33 @@ flowchart LR
 - **Visitor Access:** **Public case study with implementation currently private** (`86sunbot/security-automation` is currently private).
 
 ### Problem and Audience
-- **Problem:** SOC analysts spend excessive time on repetitive account-containment actions, manual Entra ID hygiene audits, and recurring threat hunts across Azure estates.
-- **Audience:** SecOps Engineers, Cloud Security Administrators, and Incident Responders.
+- **Problem:** SOC analysts spend excessive time on repetitive account-containment actions, manual Entra ID and Azure VM hygiene audits, firewall configuration backups, and recurring threat hunts across hybrid estates.
+- **Audience:** SecOps Engineers, Cloud & Network Security Administrators, and Incident Responders.
 
-### Current Capabilities (Documented in Case Study)
+### Current Capabilities & Source Provenance (`origin/main` @ `f0c65c4`)
 - **Managed-Identity Sentinel SOAR Playbook (`playbooks/sentinel/Disable-EntraID-Account-On-High-Risk.json`):** Azure Logic App ARM template triggered by Microsoft Sentinel incidents that uses a **System-Assigned Managed Identity** (no stored client secrets) to disable compromised Entra ID accounts, revoke refresh tokens (`revokeSignInSessions`), post adaptive cards to Microsoft Teams, and append audit comments to the Sentinel incident.
-- **PowerShell Security Auditors (`powershell/`):**
+- **PowerShell Security & Network Auditors (`powershell/`):**
   - `entra-id/Get-StaleAccounts.ps1`: Audits Entra ID via Microsoft Graph for dormant accounts (`SignInActivity`), flags privileged stale accounts, exports CSV/HTML reports, and supports `-DisableStaleAccounts -WhatIf`.
   - `azure-security/Get-StoragePublicAccess.ps1`: Scans Azure subscriptions for Storage Accounts permitting public blob access, weak TLS versions (`< TLS 1.2`), or missing HTTPS enforcement.
-  - `powershell/sentinel/`: Operational utilities for exporting Sentinel incidents and backing up analytics rules via Az PowerShell.
+  - `azure-security/Get-AzVmOsInventory.ps1` *(adapted from `PowerShell_Automation:VM-Details` @ `0d7894a` & `VM_Details+Mail` @ `bfc6c28`)*: Inventories Azure VMs across subscriptions by OS family (`Windows` vs. `Linux`) and Linux publisher/offer distribution (`RHEL`, `SUSE`, `Ubuntu`, `Debian`, `OracleLinux`, `CentOS`).
+  - `network-security/Backup-PaloAltoFirewallConfig.ps1` & `Test-NetworkEndpointReachability.ps1` *(adapted & sanitized from `Palo-Alto-Codes:PA_FW_BACKUP+MAIL` @ `a7cf333`, `Multiple_FW_Backup+Mail` @ `c836335`, `Ping+Mail` @ `cb004d3`, & `Telnet+Mail` @ `50053c5`)*: Header-authenticated (`X-PAN-KEY` via environment variable over TLS 1.2+) PAN-OS running-configuration XML backup utility with SHA-256 manifest, plus parameterized ICMP/TCP port reachability probing.
+  - `sentinel/`: Operational utilities for exporting Sentinel incidents (`Fetch-Sentinel-Incidents.ps1`, `For-Incidents-Loop.ps1`), backing up analytics rules (`Backup-Sentinel-UC.ps1`) and Azure Monitor Scheduled Query Rules (`Backup-AzMonitor-ScheduledQueryRules.ps1`, adapted from `Sentinel:Backup-AzMonitor-Rules` @ `fcea1f3`), and deploying scheduled rules from CSV (`Deploy-AzMonitorAlerts.ps1`, `Deploy-Sentinel-UC-WithoutTactics.ps1`, and `Deploy-AzSentinel-UC-WithTactics.ps1`, adapted from `Sentinel:Deploy-AzSentinel-UC-Tactics` @ `412c3c8`).
+- **Python Sentinel & Threat-Intelligence Utilities (`python/`):**
+  - `sentinel/convert_sentinel_arm_rules_to_csv.py` *(adapted from `Sentinel:Backup-use-cases_json-to-csv` @ `50fce90` & `archive-data-analysis:json-to-csv` @ `3fdbbbc`)*: Standard-library converter transforming exported Sentinel ARM/REST JSON alert rules into a normalized CSV catalogue.
+  - `network-security/subnet_and_ti_utils.py` *(adapted from `Python_Automation:Subnet_Calculator` @ `21ecfe1` & `Blacklisted_DB_Download` @ `44a685a`)*: Pure-Python CIDR subnet calculator/splitter and RFC 1918-filtered threat-intelligence IP watchlist normalizer with SHA-256 provenance.
 - **KQL Threat Hunting Queries (`kql-hunting-queries/`):**
   - `identity/stale-admin-accounts.kql`: Correlates privileged role assignments with 60-day `SigninLogs` inactivity.
   - `lateral-movement/suspicious-service-account-activity.kql`: Flags service principals or service accounts performing interactive logons (`LogonType 2/10`) or multi-host lateral movement.
 
 ### Maturity / Status
-- **Operational Script & Template Toolkit (Existing Root `MIT` License Preserved):** Self-contained ARM template, PowerShell scripts with `[CmdletBinding(SupportsShouldProcess)]`, and KQL hunting queries.
+- **Operational Script & Template Toolkit (Existing Root `MIT` License Preserved):** Self-contained ARM template, 12 parameterized PowerShell scripts verified by AST parsing and mocked Pester v6 tests (`tests/SecurityAutomation.Tests.ps1`), pure-Python utilities verified by `pytest` (`tests/test_security_automation.py`), and KQL hunting queries.
 
 ### Evidence and Limitations
-- **Validation Scope:** ARM JSON syntax for `Disable-EntraID-Account-On-High-Risk.json` was validated locally via Python `json.load`. PowerShell scripts (`*.ps1`) and KQL hunting queries (`*.kql`) were reviewed statically; **no automated test suite is defined in this repository**, and PowerShell runtime/AST checks were not executed locally (`pwsh` not installed on local macOS host).
-- **Documented Pattern Scan:** Regex scans across `HEAD` and full Git history (`git log --all -p`) found no authentication credentials or real Azure GUIDs (only placeholder `xxxxxxxx-...` strings in earlier commits).
+- **Locally Executed Validation vs. Unavailable Live-Cloud Checks (`f0c65c4`):**
+  - **Python Unit Tests (`pytest`):** Executed `/Users/suryap/.gemini/antigravity/scratch/FDE-Final-Capstone/.venv/bin/pytest -v tests/test_security_automation.py` (**`5 passed in 0.03s`**), verifying `convert_sentinel_arm_rules_to_csv.py`, `subnet_and_ti_utils.py`, Logic App ARM template JSON schema and Managed Identity configuration, and regex hygiene across all scripts.
+  - **PowerShell 7 AST & Mocked Pester v6 Suite:** Executed `/opt/homebrew/bin/pwsh -NoProfile -Command "Invoke-Pester -Path ./tests/SecurityAutomation.Tests.ps1 -Output Detailed"` (`PowerShell 7.6.4`, `Pester 6.2.0`) -> **`6 passed, 0 failed in 356ms`**, verifying 0 AST parse errors across all 12 `.ps1` scripts (after fixing 4 AST parse errors in `Get-StoragePublicAccess.ps1`) and mocked execution of all 5 newly adapted PowerShell scripts (`Deploy-AzSentinel-UC-WithTactics.ps1`, `Backup-AzMonitor-ScheduledQueryRules.ps1`, `Get-AzVmOsInventory.ps1`, `Backup-PaloAltoFirewallConfig.ps1`, `Test-NetworkEndpointReachability.ps1`).
+  - **Unavailable Checks (Not Executed Locally):** Live Microsoft Graph (`Get-MgUser`), Azure ARM/Sentinel cmdlets, and live PAN-OS firewall HTTPS endpoints were mocked via Pester rather than executed against live network targets.
+- **Documented Pattern Scan:** Regex scans across `HEAD` and full Git history (`git log --all -p`) of `security-automation` found no authentication credentials, client names, or real Azure GUIDs.
 
 ### Canonical Source & Access Status
-- **Access Status:** **Public case study with implementation currently private** (`86sunbot/security-automation`, prepared on local branch `portfolio/remediation-2026-10` at commit `7a7b3c5`).
+- **Access Status:** **Public case study with implementation currently private** (`86sunbot/security-automation` on `origin/main` at commit `f0c65c4`, 24 files).
