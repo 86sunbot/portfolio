@@ -21,9 +21,9 @@ flowchart LR
 
 ---
 
-## 1. Public Flagship Example: Governed AI Sentinel Rule-Generation Workflow (`fde-lab/sentinel-usecase-deployment`)
+## Public Flagship Example: Governed AI Sentinel Rule-Generation Workflow (`fde-lab/sentinel-usecase-deployment`)
 
-- **Visitor Access:** **Public source and demo instructions available now** in [`86sunbot/fde-lab/sentinel-usecase-deployment`](https://github.com/86sunbot/fde-lab/tree/main/sentinel-usecase-deployment) ([`workflow.py`](https://github.com/86sunbot/fde-lab/blob/main/sentinel-usecase-deployment/src/sentinel_usecase/workflow.py), [`openai_proposer.py`](https://github.com/86sunbot/fde-lab/blob/main/sentinel-usecase-deployment/src/sentinel_usecase/agent/openai_proposer.py), [`gateway.py`](https://github.com/86sunbot/fde-lab/blob/main/sentinel-usecase-deployment/src/sentinel_usecase/deployment/gateway.py), and [`Deploy-SentinelUseCases.ps1`](https://github.com/86sunbot/fde-lab/blob/main/sentinel-usecase-deployment/scripts/Deploy-SentinelUseCases.ps1)).
+- **Visitor Access:** **Public source and demo instructions available now** in [`86sunbot/fde-lab/sentinel-usecase-deployment`](https://github.com/86sunbot/fde-lab/tree/main/sentinel-usecase-deployment) ([`workflow.py`](https://github.com/86sunbot/fde-lab/blob/main/sentinel-usecase-deployment/src/sentinel_usecase/workflow.py), [`openai_proposer.py`](https://github.com/86sunbot/fde-lab/blob/main/sentinel-usecase-deployment/src/sentinel_usecase/agent/openai_proposer.py), [`gateway.py`](https://github.com/86sunbot/fde-lab/blob/main/sentinel-usecase-deployment/src/sentinel_usecase/deployment/gateway.py), and [`Smoke-Test-SentinelDeployment.ps1`](https://github.com/86sunbot/fde-lab/blob/main/sentinel-usecase-deployment/scripts/Smoke-Test-SentinelDeployment.ps1)).
 
 ### Problem and Intended Users
 - **Problem:** Giving an LLM direct tool access to create or enable SIEM detection rules in Microsoft Sentinel risks deploying invalid KQL, bypassing peer review, or triggering alert storms. Security operations teams need an agent workflow where the LLM can only propose structured candidate artifacts, deterministic code enforces validation and single-pass repair, human operators must explicitly approve (`ApprovalDecision.APPROVE`), and deployment gateways re-validate artifacts and enforce `enabled = False` before invoking Azure deployment scripts.
@@ -32,37 +32,38 @@ flowchart LR
 ### Architecture Diagram
 ```mermaid
 flowchart TD
-    Req["1. Analyst Natural-Language Request<br/>(UseCaseWorkflow.create_bundle)"] --> Route{"Pattern Supported?<br/>(Entra ID Password Spray)"}
-    Route -->|"No"| Unsupported["Fail Closed: STATUS_UNSUPPORTED<br/>(No LLM Call or Deployment)"]
-    Route -->|"Yes"| Propose["2. Untrusted Proposal Layer<br/>(OpenAIUseCaseProposer or ReferenceUseCaseProposer)<br/>• No tool execution permissions"]
-    Propose --> Validate1["3. Deterministic Two-Layer Validation<br/>(validate_artifact: structural.py + detection.py)"]
-    Validate1 -->|"Passed == False"| Repair["Single-Pass Repair Attempt<br/>(proposer.repair with validation errors)"]
+    Req["1. Analyst Natural-Language Request (UseCaseWorkflow.generate)"] --> Route{"Pattern Supported? (Entra ID Password Spray)"}
+    Route -->|"No"| Unsupported["Fail Closed: UnsupportedUseCaseError (No LLM Call or Deployment)"]
+    Route -->|"Yes"| Propose["2. Untrusted Proposal Layer (OpenAIRuleProposer or ReferencePasswordSprayProposer - no tool execution)"]
+    Propose --> Validate1["3. Deterministic Two-Layer Validation (RuleValidator: structural.py + detection.py)"]
+    Validate1 -->|"is_valid == False"| Repair["Single-Pass Repair Attempt (proposer.propose with validation feedback)"]
     Repair --> Validate2["Re-Validate Candidate"]
-    Validate1 -->|"Passed == True"| Pending["STATUS_PENDING_APPROVAL<br/>(Artifact Bundle Written to Disk)"]
-    Validate2 -->|"Passed == True"| Pending
-    Validate2 -->|"Passed == False"| Failed["STATUS_VALIDATION_FAILED<br/>(Blocked from Approval/Deploy)"]
-    Pending --> Human["4. Human Review Gate<br/>(UseCaseWorkflow.record_approval)"]
-    Human -->|"ApprovalDecision.APPROVE"| Gateway["5. DeploymentGateway.deploy (gateway.py)<br/>• Verifies approval == APPROVE<br/>• Re-runs validate_artifact(artifact)<br/>• Asserts artifact.enabled is False<br/>• Runs PowerShell Preview before -Apply"]
+    Validate1 -->|"is_valid == True"| Pending["STATUS_PENDING_HUMAN_APPROVAL (Review Artifact Written to generated-rules/)"]
+    Validate2 -->|"is_valid == True"| Pending
+    Validate2 -->|"is_valid == False"| Failed["STATUS_REJECTED_VALIDATION (Blocked from Approval/Deploy)"]
+    Pending --> Human["4. Human Review Gate (ApprovalRecord / ApprovalDecision.APPROVE)"]
+    Human -->|"UseCaseWorkflow.deploy"| Gateway["5. PowerShellCsvDeploymentGateway (gateway.py) - Re-verifies approval & validation, forces Enabled=false, runs Preview before -Apply"]
 ```
 
 ### Representative Artifacts Visitors Can Inspect Now
-1. **Workflow Orchestrator & Single-Pass Repair (`workflow.py`):**
-   - [**`fde-lab/sentinel-usecase-deployment/src/sentinel_usecase/workflow.py`**](https://github.com/86sunbot/fde-lab/blob/main/sentinel-usecase-deployment/src/sentinel_usecase/workflow.py) — Implements `create_bundle()`, single-pass `proposer.repair()`, `record_approval()`, and `deploy()`.
-2. **Pre-Deployment Gate & Mandatory Disabled-State Enforcement (`gateway.py`):**
-   - [**`fde-lab/sentinel-usecase-deployment/src/sentinel_usecase/deployment/gateway.py`**](https://github.com/86sunbot/fde-lab/blob/main/sentinel-usecase-deployment/src/sentinel_usecase/deployment/gateway.py) — Enforces five explicit pre-deployment checks before calling `Deploy-SentinelUseCases.ps1`:
+1. **Workflow Orchestrator, Single-Pass Repair & Pre-Deployment Gate (`workflow.py`):**
+   - [**`fde-lab/sentinel-usecase-deployment/src/sentinel_usecase/workflow.py`**](https://github.com/86sunbot/fde-lab/blob/main/sentinel-usecase-deployment/src/sentinel_usecase/workflow.py) — Implements `UseCaseWorkflow.generate()` (unsupported request fail-closed check + single-pass LLM repair) and `UseCaseWorkflow.deploy()` (lines 53–65 verbatim below):
    ```python
-   if approval is None:
-       raise DeploymentBlockedError("Deployment is blocked until human approval is recorded.")
    if approval.decision != ApprovalDecision.APPROVE:
        raise DeploymentBlockedError(
-           f"Deployment is blocked because the approval decision is '{approval.decision.value}'."
+           f"Deployment blocked: human approval decision is '{approval.decision.value}', not 'approve'."
        )
-   validation = validate_artifact(artifact)
-   if not validation.passed:
-       raise DeploymentBlockedError("Deployment is blocked because validation failed on re-check.")
-   if artifact.enabled is not False:
-       raise DeploymentBlockedError("Deployment is blocked because rules must remain disabled.")
+
+   validation = self.validator.validate(rule)
+   if not validation.is_valid:
+       messages = "; ".join(f"[{issue.code}] {issue.message}" for issue in validation.errors)
+       raise DeploymentBlockedError(f"Deployment blocked: rule failed validation: {messages}")
+
+   if rule.enabled is not False:
+       raise DeploymentBlockedError("Deployment blocked: rule must remain disabled (enabled=False).")
    ```
+2. **PowerShell CSV Deployment Gateway & Smoke-Test Script (`gateway.py` & `scripts/`):**
+   - [**`fde-lab/sentinel-usecase-deployment/src/sentinel_usecase/deployment/gateway.py`**](https://github.com/86sunbot/fde-lab/blob/main/sentinel-usecase-deployment/src/sentinel_usecase/deployment/gateway.py) — `PowerShellCsvDeploymentGateway` re-checks `approval.decision == ApprovalDecision.APPROVE` and `rule.enabled is False`, writes `generated-rules/deployment-input/<rule-id>/rule.kql` and `sentinel-use-cases.csv` (`"Enabled": "false"`), executes the external `Deploy-SentinelUseCases.ps1` script in preview mode first, and only runs `-Apply -Confirm:$false` if preview succeeds (see [`scripts/Smoke-Test-SentinelDeployment.ps1`](https://github.com/86sunbot/fde-lab/blob/main/sentinel-usecase-deployment/scripts/Smoke-Test-SentinelDeployment.ps1) and [`scripts/README.md`](https://github.com/86sunbot/fde-lab/blob/main/sentinel-usecase-deployment/scripts/README.md)).
 3. **Additional Publicly Inspectable Regulated-Workflow Prototypes:**
    - [**`86sunbot/FDE-Final-Capstone`**](https://github.com/86sunbot/FDE-Final-Capstone) — CGT patient-to-batch orchestration console (`118` `pytest` tests, fail-closed `satisfied`/`not-satisfied`/`unknown` gates, bitemporal history, SHA-256 hash-chained SQLite audit log).
    - [**`86sunbot/caldera-monitoring-triage`**](https://github.com/86sunbot/caldera-monitoring-triage) — Clinical monitoring report triage prototype (`9` `pytest` tests on `main`; `10` Python + `3` TypeScript checks on [Draft PR #1](https://github.com/86sunbot/caldera-monitoring-triage/pull/1)).
@@ -75,23 +76,23 @@ python3 -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt -r requirements-dev.txt
 ruff check .
 PYTHONPATH=src pytest -q tests
-# Run end-to-end offline bundle creation + human approval + dry-run preview
+# Run end-to-end offline rule creation (writes review artifact to generated-rules/)
 python run.py create "Create a password spray detection for Entra ID sign-in logs" --offline-reference
 ```
 
 ### Validation Evidence and Known Limitations
-- **Validation Evidence:** **`28` automated `pytest` tests defined and passing (`28 passed in 0.04s`)** in [`sentinel-usecase-deployment/tests/`](https://github.com/86sunbot/fde-lab/tree/main/sentinel-usecase-deployment/tests), including [`test_workflow.py`](https://github.com/86sunbot/fde-lab/blob/main/sentinel-usecase-deployment/tests/test_workflow.py) (testing unsupported request fail-closed behavior, single-pass LLM repair, and approval state transitions) and [`test_deployment_gateway.py`](https://github.com/86sunbot/fde-lab/blob/main/sentinel-usecase-deployment/tests/test_deployment_gateway.py) (testing rejection of unapproved, rejected, tampered, or `enabled=True` rules, and verifying that live apply requires a prior preview pass). Wired into CI on [Draft PR #4](https://github.com/86sunbot/fde-lab/pull/4).
+- **Validation Evidence:** **`28` automated `pytest` tests defined and passing (`28 passed in 0.04s`)** in [`sentinel-usecase-deployment/tests/`](https://github.com/86sunbot/fde-lab/tree/main/sentinel-usecase-deployment/tests), including [`test_workflow.py`](https://github.com/86sunbot/fde-lab/blob/main/sentinel-usecase-deployment/tests/test_workflow.py) (testing unsupported request fail-closed behavior, single-pass LLM repair, and approval state transitions) and [`test_deployment.py`](https://github.com/86sunbot/fde-lab/blob/main/sentinel-usecase-deployment/tests/test_deployment.py) (testing rejection of unapproved, rejected, tampered, or `enabled=True` rules, and verifying that live apply requires a prior preview pass). Wired into CI on [Draft PR #4](https://github.com/86sunbot/fde-lab/pull/4).
 - **Known Limitations:**
-  - The public `fde-lab/sentinel-usecase-deployment` package is the frozen **V1 baseline** supporting only the Entra ID single-IP password spray pattern and PowerShell deployment (`Deploy-SentinelUseCases.ps1`).
-  - Live OpenAI proposal generation (`OpenAIUseCaseProposer`) requires `OPENAI_API_KEY`, and live Sentinel rule creation requires `pwsh`, the `Az` PowerShell modules, and an authenticated Azure subscription; offline verification uses `--offline-reference` and mocked subprocess runners.
+  - The public `fde-lab/sentinel-usecase-deployment` package is the frozen **V1 baseline** supporting only the Entra ID single-IP password spray pattern and external PowerShell deployment (`Deploy-SentinelUseCases.ps1`).
+  - Live OpenAI proposal generation (`OpenAIRuleProposer`) requires `OPENAI_API_KEY`, and live Sentinel rule creation requires `pwsh`, the external `Deploy-SentinelUseCases.ps1` script (`SENTINEL_DEPLOY_SCRIPT_PATH`), the `Az` PowerShell modules, and an authenticated Azure subscription; offline verification uses `--offline-reference` and mocked subprocess runners.
 
 ### Contribution and Third-Party Attribution
-- **My Contribution:** Designed and implemented `UseCaseWorkflow`, `OpenAIUseCaseProposer`, `ReferenceUseCaseProposer`, `DeploymentGateway`, `Deploy-SentinelUseCases.ps1`, and the 28-test `pytest` suite.
+- **My Contribution:** Designed and implemented `UseCaseWorkflow`, `OpenAIRuleProposer`, `ReferencePasswordSprayProposer`, `PowerShellCsvDeploymentGateway`, `Smoke-Test-SentinelDeployment.ps1`, and the 28-test `pytest` suite.
 - **Third-Party Attribution:** Uses standard open-source libraries (`openai`, `pydantic`, `pytest`, `ruff`); contains no third-party templates or proprietary code.
 
 ---
 
-## 2. AI-Assisted Microsoft Sentinel Detection Engineering Agent (`ai-agent-usecase-deployment` V3.4 — Private Case Study)
+## 1. AI-Assisted Microsoft Sentinel Detection Engineering Agent (`ai-agent-usecase-deployment` V3.4)
 
 - **Visitor Access:** **Public case study with V3.4 implementation currently private** (`86sunbot/ai-agent-usecase-deployment` V3.4 is currently private and scheduled for Stage C clean-companion release; the V1 baseline above is **publicly inspectable now** in [`86sunbot/fde-lab/tree/main/sentinel-usecase-deployment`](https://github.com/86sunbot/fde-lab/tree/main/sentinel-usecase-deployment)).
 
@@ -121,7 +122,7 @@ python run.py create "Create a password spray detection for Entra ID sign-in log
 
 ---
 
-## 3. Cell & Gene Therapy (CGT) Patient-to-Batch Orchestration (`FDE-Final-Capstone`)
+## 2. Cell & Gene Therapy (CGT) Patient-to-Batch Orchestration (`FDE-Final-Capstone`)
 
 - **Visitor Access:** **Public source and demo instructions** ([`86sunbot/FDE-Final-Capstone`](https://github.com/86sunbot/FDE-Final-Capstone)).
 
@@ -155,7 +156,7 @@ python run.py create "Create a password spray detection for Entra ID sign-in log
 
 ---
 
-## 4. Clinical Monitoring Report Triage Prototype (`caldera-monitoring-triage`)
+## 3. Clinical Monitoring Report Triage Prototype (`caldera-monitoring-triage`)
 
 - **Visitor Access:** **Public source and demo instructions** ([`86sunbot/caldera-monitoring-triage`](https://github.com/86sunbot/caldera-monitoring-triage) · [Draft PR #1](https://github.com/86sunbot/caldera-monitoring-triage/pull/1) · [Sprint Walkthrough](https://github.com/86sunbot/caldera-monitoring-triage/blob/main/docs/FDE_SPRINT_STORY_AND_WALKTHROUGH.md) · [10-Minute Demo Script](https://github.com/86sunbot/caldera-monitoring-triage/blob/main/docs/DEMO_PRESENTATION_SCRIPT.md)).
 
@@ -187,7 +188,7 @@ python run.py create "Create a password spray detection for Entra ID sign-in log
 
 ---
 
-## 5. AI Security Lab (`ai-security-lab` — Private Case Study)
+## 4. AI Security Lab (`ai-security-lab`)
 
 - **Visitor Access:** **Public case study with implementation currently private** (`86sunbot/ai-security-lab` is currently private and scheduled for Stage C public release).
 
@@ -205,7 +206,7 @@ python run.py create "Create a password spray detection for Entra ID sign-in log
 
 ### Evidence and Limitations
 - **Validation Scope & Documented Pattern Scan:** No automated test suite is defined in this documentation repository; embedded Python snippets were syntax-checked via `ast.parse`, and regex pattern scans across `HEAD` and Git history detected no credentials or personal Azure GUIDs.
-- **Known Limitations:** Documentation and reference patterns only; for an executable RAG implementation with public source and automated tests, see [`fde-lab/document-assistant/versions/v3-enterprise-assistant`](security-architecture.md#1-public-flagship-example-enterprise-aidr-architecture-comparison--rag-security-boundary-fde-lab).
+- **Known Limitations:** Documentation and reference patterns only; for an executable RAG implementation with public source and automated tests, see [`fde-lab/document-assistant/versions/v3-enterprise-assistant`](security-architecture.md#public-flagship-example-enterprise-aidr-architecture-comparison--rag-security-boundary-fde-lab).
 
 ### Canonical Source & Access Status
 - **Access Status:** **Public case study with implementation currently private** (`86sunbot/ai-security-lab`, prepared on local branch `portfolio/remediation-2026-10` at commit `d9a4f2a` — Stage C candidate).
