@@ -19,6 +19,63 @@ flowchart LR
 
 ---
 
+## Public Flagship Example: Enterprise AI/DR Architecture Comparison & RAG Security Boundary (`fde-lab`)
+
+- **Visitor Access:** **Public source and demo instructions available now** in [`86sunbot/fde-lab`](https://github.com/86sunbot/fde-lab) ([`microsoft_vs_crowdstrike_ai_dr_guide.md`](https://github.com/86sunbot/fde-lab/blob/main/microsoft_vs_crowdstrike_ai_dr_guide.md), [`v3-enterprise-assistant/docs/security.md`](https://github.com/86sunbot/fde-lab/blob/main/document-assistant/versions/v3-enterprise-assistant/docs/security.md), and [`v3-enterprise-assistant/app/security.py`](https://github.com/86sunbot/fde-lab/blob/main/document-assistant/versions/v3-enterprise-assistant/app/security.py)).
+
+### Problem and Intended Users
+- **Problem:** Enterprise security architects and CISOs face two simultaneous challenges when adopting generative AI and modernizing SecOps:
+  1. Selecting and integrating **AI-Driven Detection and Response (AI/DR)** control planes across identity, browser DLP, agent runtime execution, and SIEM data-lake economics (**Microsoft Defender XDR + Sentinel + Entra Agent ID + Purview** vs. **CrowdStrike Falcon + Next-Gen SIEM + Falcon Guardian**).
+  2. Designing concrete API security boundaries (constant-time Bearer API-key authentication, SHA-256 client-ID hashing, sliding-window rate limiting, input validation, and non-root container isolation) when evolving an internal Retrieval-Augmented Generation (RAG) prototype into a service (`v1 → v3`).
+- **Intended Users:** CISOs, Cloud & AI Security Architects, SOC Transformation Leads, and Applied AI Engineers.
+
+### Architecture Diagram
+```mermaid
+flowchart TD
+    subgraph ControlPlanes ["Enterprise AI/DR Control-Plane Comparison (microsoft_vs_crowdstrike_ai_dr_guide.md)"]
+        direction LR
+        MS["Microsoft Security Stack: Entra Agent ID + Conditional Access, Purview Endpoint DLP + DSPM for AI, Prompt Shields + Defender BehaviorInfo, Sentinel + Security Copilot + APIM Quotas"] ---|"Architectural Trade-Off Analysis"| CS["CrowdStrike Falcon Stack: Falcon Identity Service-Account Monitoring, Falcon Data Security, Falcon AIDR + Kernel-Level Falcon Guardian, Next-Gen SIEM + Charlotte AI + Token Counts"]
+    end
+
+    subgraph RAGService ["Executable RAG Service Security Boundary (v3-enterprise-assistant)"]
+        direction LR
+        Client["Streamlit UI / API Consumer"] -->|"Authorization: Bearer API_KEY"| Auth["require_api_key (secrets.compare_digest + SHA-256 client_id)"]
+        Auth -->|"Per-Client-ID Sliding Window"| RL["InMemoryRateLimiter / enforce_rate_limit (HTTP 429 + Retry-After)"]
+        RL -->|"Pydantic Schema & Length Bounds"| Engine["OpenAI Embeddings + InMemoryVectorStore + Lexical Reranker"]
+    end
+
+    ControlPlanes --> RAGService
+```
+
+### Representative Artifacts Visitors Can Inspect Now
+1. **Enterprise AI/DR Comparative Architecture Guide (491 lines, 8 Mermaid diagrams):**
+   - [**`fde-lab/microsoft_vs_crowdstrike_ai_dr_guide.md`**](https://github.com/86sunbot/fde-lab/blob/main/microsoft_vs_crowdstrike_ai_dr_guide.md) — Covers the *Three Jobs of AI Security* (AI for SecOps, Security for AI, Governance of AI), Shadow AI workstation/browser controls, AI agent identity governance (`Entra Agent ID` vs. service accounts), token cost control vs. security telemetry, **4 end-to-end attack scenarios** (*Sensitive Data Pasted into Public AI*, *Stolen API Key & Denial-of-Wallet*, *Indirect Prompt Injection via Email*, and *Compromised AI Agent Running Rogue Database Queries*), a 30/60/90-day rollout roadmap, and a 20-item assessment checklist.
+2. **Executable API Security Boundary & ADRs (`v3-enterprise-assistant`):**
+   - [**`document-assistant/versions/v3-enterprise-assistant/app/security.py`**](https://github.com/86sunbot/fde-lab/blob/main/document-assistant/versions/v3-enterprise-assistant/app/security.py) — Implements `require_api_key` (extracting `Authorization: Bearer <api_key>` via `HTTPBearer`, comparing with `secrets.compare_digest`, and deriving a 16-hex SHA-256 `client_id`) and `InMemoryRateLimiter` / `enforce_rate_limit` (asyncio-locked `deque` returning `429 Too Many Requests` with `Retry-After` and `X-RateLimit-*` headers).
+   - [**`document-assistant/versions/v3-enterprise-assistant/docs/security.md`**](https://github.com/86sunbot/fde-lab/blob/main/document-assistant/versions/v3-enterprise-assistant/docs/security.md) & [**`docs/decisions/ADR-001`..`ADR-006`**](https://github.com/86sunbot/fde-lab/tree/main/document-assistant/versions/v3-enterprise-assistant/docs/decisions) — Threat model and architectural decision records.
+
+### Setup and Reproduction Instructions
+```bash
+git clone https://github.com/86sunbot/fde-lab.git
+cd fde-lab/document-assistant/versions/v3-enterprise-assistant
+python3 -m venv .venv && source .venv/bin/activate
+pip install -r requirements-dev.txt
+ruff check .
+pytest -q
+```
+
+### Validation Evidence and Known Limitations
+- **Validation Evidence:** **`32` automated `pytest` tests defined and passing (`32 passed`)** across 9 test files in `document-assistant/versions/v3-enterprise-assistant/tests/` (specifically including [`tests/test_api.py`](https://github.com/86sunbot/fde-lab/blob/main/document-assistant/versions/v3-enterprise-assistant/tests/test_api.py) for `Bearer` API-key rejection, `/metrics` authentication, and `429` rate-limit retry headers), plus `ruff check .` (`0` errors) and Docker build verification in [`.github/workflows/v3-ci.yml`](https://github.com/86sunbot/fde-lab/blob/main/.github/workflows/v3-ci.yml).
+- **Known Limitations:**
+  - `microsoft_vs_crowdstrike_ai_dr_guide.md` is a comparative architectural guide and decision framework based on documented platform capabilities, not an empirical throughput or latency benchmark.
+  - `v3-enterprise-assistant` uses an in-memory per-process rate limiter (`InMemoryRateLimiter`) and static environment-variable `Bearer` API key suitable for single-container prototypes; multi-instance deployments require a shared gateway (such as Azure API Management with Entra ID JWT validation and Redis-backed rate limiting).
+
+### Contribution and Third-Party Attribution
+- **My Contribution:** Authored the 491-line `microsoft_vs_crowdstrike_ai_dr_guide.md` architecture comparison, the `v1 → v3` Document Assistant progression, the FastAPI security boundary (`app/security.py`), the ADRs (`ADR-001`..`ADR-006`), and the 32-test `pytest` suite.
+- **Third-Party Attribution:** The sample PDF used for offline retrieval chunking in `v2-ai-assistant/document.pdf` and `v3-enterprise-assistant/document.pdf` is a 4-page print-to-PDF excerpt of public Microsoft Learn documentation (*"Microsoft Defender for Identity Overview"*).
+
+---
+
 ## 1. Azure Security Architecture Framework (`azure-security-framework`)
 
 - **Visitor Access:** **Public case study with implementation currently private** (`86sunbot/azure-security-framework` is currently private and scheduled for Stage B public release).
@@ -50,23 +107,7 @@ flowchart LR
 
 ---
 
-## 2. Enterprise AI/DR Architecture Comparison (`fde-lab/microsoft_vs_crowdstrike_ai_dr_guide.md`)
-
-- **Visitor Access:** **Public source available now** ([`microsoft_vs_crowdstrike_ai_dr_guide.md`](https://github.com/86sunbot/fde-lab/blob/main/microsoft_vs_crowdstrike_ai_dr_guide.md)).
-
-### Problem and Audience
-- **Problem:** Enterprise security architects evaluating unified SIEM/XDR and agentic SecOps platforms need structured architectural trade-off analysis across telemetry ingestion, identity protection, cloud workload coverage, and data-lake economics.
-- **Audience:** CISOs, Enterprise Security Architects, and SOC Transformation Leads.
-
-### Current Capabilities
-- **Architectural Comparison (`microsoft_vs_crowdstrike_ai_dr_guide.md`):** 491-line side-by-side comparison of **Microsoft Defender XDR + Microsoft Sentinel + Security Copilot** vs. **CrowdStrike Falcon + Next-Gen SIEM + Charlotte AI** across endpoint telemetry, identity threat detection (MDI vs. Falcon Identity), cloud security (Defender for Cloud vs. Falcon Cloud Security), SIEM retention/ingestion pricing models, and AI copilot operational boundaries.
-
-### Maturity / Status
-- **Public Reference Architecture Comparison (License Selection Pending Owner Confirmation):** Publicly accessible in [`86sunbot/fde-lab`](https://github.com/86sunbot/fde-lab/blob/main/microsoft_vs_crowdstrike_ai_dr_guide.md).
-
----
-
-## 3. Enterprise Security Architecture Templates & Lab Runbooks (`ms-security-architect-study-guide`)
+## 2. Enterprise Security Architecture Templates & Lab Runbooks (`ms-security-architect-study-guide`)
 
 - **Visitor Access:** **Public case study and chapter/template summary with manuscript currently private** (unpublished local v1.1 manuscript; Stage C companion candidate).
 

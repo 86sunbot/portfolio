@@ -24,6 +24,33 @@ All books below are **independently authored, unpublished local digital manuscri
 
 ---
 
+## Publicly Inspectable Sample Lesson: Cross-Domain Architecture Walk-Through (CISSP → Entra ID `SC-100`/`SC-500` → Microsoft Sentinel)
+
+> **Originality & Manuscript Separation Notice:** This cross-domain lesson was written specifically for the public GitHub portfolio (`86sunbot/portfolio`) to demonstrate my teaching and architectural synthesis style using the publicly inspectable [`fde-lab/sentinel-usecase-deployment`](https://github.com/86sunbot/fde-lab/tree/main/sentinel-usecase-deployment) codebase. It is **100% original portfolio content** and is **completely separate from the four unpublished local book manuscripts** listed above (no chapters, text, or figures from the unpublished manuscripts are reproduced here).
+
+### Scenario: Defending and Detecting Single-IP Password Spraying Against Cloud Identity
+
+```mermaid
+flowchart LR
+    A["1. CISSP Domain 3 & 5 Principle: Complete Mediation, Fail-Safe Defaults, Least Privilege (JIT)"] --> B["2. Entra ID Preventive Plane (SC-100 / SC-500): Block Legacy Auth, Phishing-Resistant FIDO2 MFA, Sign-In Risk CA"]
+    B --> C["3. Sentinel Detective Plane (SigninLogs KQL): 15m Window, ResultType != 0, dcount(UserPrincipalName) >= 10"]
+    C --> D["4. Governed Response Plane: Disabled-by-Default Rule Promotion, Managed-Identity Logic App Containment"]
+```
+
+### Cross-Domain Control & Verification Matrix
+
+| Architectural Layer | CISSP Principle (Domains 3, 5 & 7) | Azure / Entra ID Control Plane (`SC-100` / `SC-500`) | Microsoft Sentinel Verification & Public Artifact |
+| :--- | :--- | :--- | :--- |
+| **1. Boundary Mediation** | **Complete Mediation (Domain 3):** Every access request must be checked against an authority; no protocol bypass paths allowed. | **Conditional Access — Block Legacy Authentication:** Reject protocols (`POP`, `IMAP`, `SMTP`, basic auth) that cannot enforce MFA or device posture. | Query `SigninLogs \| where ClientAppUsed !in ("Browser", "Mobile Apps and Desktop clients")` to verify zero legacy-auth successes after policy enforcement. |
+| **2. Authentication Assurance** | **Defense in Depth & Fail-Safe Defaults (Domains 3 & 5):** Assume single-factor secrets will be sprayed or phished; require cryptographic possession for Tier-0 roles. | **Authentication Strengths + Smart Lockout:** Enforce **Phishing-Resistant MFA (`FIDO2` / `Windows Hello for Business`)** for privileged personas and configure Entra Smart Lockout thresholds. | Inspect `AuthenticationRequirement` and `ResultType` (`50126` invalid password, `50053` smart lockout) in `SigninLogs` across targeted accounts. |
+| **3. Detection Engineering** | **Intrusion Detection & Signal-to-Noise Discipline (Domain 7):** Aggregate low-and-slow failures across distinct principals rather than alerting on single user typos. | **AMA / Diagnostic Settings (`SigninLogs` & `AADNonInteractiveUserSignInLogs`):** Stream interactive and non-interactive sign-in telemetry into the Sentinel Log Analytics workspace. | **Publicly Inspectable KQL Rule:** Summarize `ResultType != "0"` over `DetectionWindow = 15m` by `SourceIP = IPAddress, bin(TimeGenerated, DetectionWindow)` where `dcount(UserPrincipalName) >= 10` and `count() >= 20` ([`reference_proposer.py`](https://github.com/86sunbot/fde-lab/blob/main/sentinel-usecase-deployment/src/sentinel_usecase/agent/reference_proposer.py)). |
+| **4. Change & Response Governance** | **Separation of Duties (Domains 1 & 7):** Neither an automated rule generator nor a single unreviewed change should alter production enforcement without verification. | **Entra ID PIM + System-Assigned Managed Identity:** Use JIT role activation for human approvers and secretless Managed Identities for SOAR containment playbooks. | **Publicly Inspectable Validator & Gateway:** Enforce `enabled = False` and `ApprovalDecision.APPROVE` in [`structural.py`](https://github.com/86sunbot/fde-lab/blob/main/sentinel-usecase-deployment/src/sentinel_usecase/validation/structural.py), [`workflow.py`](https://github.com/86sunbot/fde-lab/blob/main/sentinel-usecase-deployment/src/sentinel_usecase/workflow.py), and [`gateway.py`](https://github.com/86sunbot/fde-lab/blob/main/sentinel-usecase-deployment/src/sentinel_usecase/deployment/gateway.py). |
+
+### Architecture Review Board (ARB) Defense Takeaway
+- **Exam & Practitioner Trap (`CISSP` / `SC-100`):** Relying solely on per-user account lockout (`50053`) against a low-and-slow password spray (1 failed attempt per user across 200 users from a single IP) either misses the attack (if threshold > 1) or enables mass denial-of-service against legitimate users (if threshold is too aggressive). Combining **Entra ID Conditional Access + Phishing-Resistant MFA** (preventive control) with **cross-principal `dcount(UserPrincipalName)` aggregation in Sentinel `SigninLogs`** (detective control) addresses both confidentiality and availability.
+
+---
+
 ## 1. *Microsoft Security Architect Master Study Guide & Reference Architecture (v1.1)*
 
 - **Visitor Access:** **Public chapter and template summary with manuscript currently private.**

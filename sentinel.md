@@ -17,7 +17,72 @@ flowchart LR
     C --> D["4. SOAR & SecOps Automation: security-automation (Managed Identity Logic Apps)"]
 ```
 
-> **Related AI Agent Work:** For my **AI-Assisted Microsoft Sentinel Detection Engineering Agent (`ai-agent-usecase-deployment` V3.4)**—which automates telemetry discovery, KQL generation, deterministic validation, historical backtesting, and human-approved deployment—see its primary case study in [**`ai-agents.md#1-ai-assisted-microsoft-sentinel-detection-engineering-agent-ai-agent-usecase-deployment-v34`**](ai-agents.md#1-ai-assisted-microsoft-sentinel-detection-engineering-agent-ai-agent-usecase-deployment-v34).
+> **Related AI Agent Work:** For the governed agent workflow that wraps this KQL detection and validator (`workflow.py`, `gateway.py`) and its multi-table V3.4 evolution (`ai-agent-usecase-deployment`), see [**`ai-agents.md#public-flagship-example-governed-ai-sentinel-rule-generation-workflow-fde-labsentinel-usecase-deployment`**](ai-agents.md#public-flagship-example-governed-ai-sentinel-rule-generation-workflow-fde-labsentinel-usecase-deployment).
+
+---
+
+## Public Flagship Example: Entra ID Password Spray KQL Detection & Two-Layer Validator (`fde-lab/sentinel-usecase-deployment`)
+
+- **Visitor Access:** **Public source and demo instructions available now** in [`86sunbot/fde-lab/sentinel-usecase-deployment`](https://github.com/86sunbot/fde-lab/tree/main/sentinel-usecase-deployment) ([`reference_proposer.py`](https://github.com/86sunbot/fde-lab/blob/main/sentinel-usecase-deployment/src/sentinel_usecase/agent/reference_proposer.py), [`structural.py`](https://github.com/86sunbot/fde-lab/blob/main/sentinel-usecase-deployment/src/sentinel_usecase/validation/structural.py), [`detection.py`](https://github.com/86sunbot/fde-lab/blob/main/sentinel-usecase-deployment/src/sentinel_usecase/validation/detection.py), and [`sentinel_payload.py`](https://github.com/86sunbot/fde-lab/blob/main/sentinel-usecase-deployment/src/sentinel_usecase/deployment/sentinel_payload.py)).
+
+### Problem and Intended Users
+- **Problem:** Detection engineers writing Microsoft Sentinel Scheduled analytics rules for identity attacks (such as single-IP password spraying against `SigninLogs`) must ensure that parameterized KQL thresholds match rule metadata, required output columns (`SourceIP`, `TargetAccount`) exist for incident entity mapping, destructive KQL commands are blocked, and newly generated rules cannot be deployed in an active state before shadow-mode tuning.
+- **Intended Users:** Microsoft Sentinel Detection Engineers, Threat Hunters, and SecOps Engineers.
+
+### Architecture Diagram
+```mermaid
+flowchart LR
+    A["Candidate DetectionRuleProposal (reference_proposer.py)"] --> B["Layer 1: StructuralValidator (validation/structural.py) - Enforces enabled == False, blocks .create/.drop/externaldata, checks entity columns"]
+    B --> C["Layer 2: PasswordSprayDetectionValidator (validation/detection.py) - Verifies SigninLogs + ResultType != 0, dcount(UserPrincipalName), let threshold agreement, 3+ tuning scenarios"]
+    C --> D["SentinelScheduledAlertRule Payload (deployment/sentinel_payload.py) - PT5M frequency, PT15M lookback, IP + Account entityMappings, enabled = False"]
+```
+
+### Representative Artifact Visitors Can Inspect Now
+The complete Scheduled KQL analytics rule and entity mappings below are publicly inspectable verbatim in [**`fde-lab/sentinel-usecase-deployment/src/sentinel_usecase/agent/reference_proposer.py`**](https://github.com/86sunbot/fde-lab/blob/main/sentinel-usecase-deployment/src/sentinel_usecase/agent/reference_proposer.py) (lines 48–82):
+
+```kql
+let DetectionWindow = 15m;
+let MinimumDistinctAccounts = 10;
+let MinimumFailedAttempts = 20;
+SigninLogs
+| where TimeGenerated >= ago(DetectionWindow)
+| where ResultType != "0"
+| where isnotempty(IPAddress) and isnotempty(UserPrincipalName)
+| summarize FailedAttempts = count(),
+            DistinctAccountCount = dcount(UserPrincipalName),
+            TargetAccounts = make_set(UserPrincipalName, 100)
+    by SourceIP = IPAddress, bin(TimeGenerated, DetectionWindow)
+| where DistinctAccountCount >= MinimumDistinctAccounts
+    and FailedAttempts >= MinimumFailedAttempts
+| mv-expand TargetAccount = TargetAccounts to typeof(string)
+| project TimeGenerated, SourceIP, TargetAccount, FailedAttempts, DistinctAccountCount
+```
+
+- **MITRE ATT&CK v14 Mapping:** `CredentialAccess` — `T1110` (*Brute Force*), `T1110.003` (*Password Spraying*).
+- **Schedule & Entity Mappings (`entityMappings`):** `query_frequency="PT5M"`, `query_lookback="PT15M"`, mapping `IP` (`Address -> SourceIP`) and `Account` (`FullName -> TargetAccount`).
+- **Two-Layer Validator Source:** Inspect [`validation/structural.py`](https://github.com/86sunbot/fde-lab/blob/main/sentinel-usecase-deployment/src/sentinel_usecase/validation/structural.py) (`StructuralValidator`) and [`validation/detection.py`](https://github.com/86sunbot/fde-lab/blob/main/sentinel-usecase-deployment/src/sentinel_usecase/validation/detection.py) (`PasswordSprayDetectionValidator`).
+
+### Setup and Reproduction Instructions
+```bash
+git clone https://github.com/86sunbot/fde-lab.git
+cd fde-lab/sentinel-usecase-deployment
+python3 -m venv .venv && source .venv/bin/activate
+pip install -r requirements.txt -r requirements-dev.txt
+ruff check .
+PYTHONPATH=src pytest -q tests
+# Generate the validated offline reference bundle in generated-rules/
+python run.py create "Create a password spray detection for Entra ID sign-in logs" --offline-reference
+```
+
+### Validation Evidence and Known Limitations
+- **Validation Evidence:** **`28` automated `pytest` tests defined and passing (`28 passed in 0.04s`)** across 5 test modules in [`sentinel-usecase-deployment/tests/`](https://github.com/86sunbot/fde-lab/tree/main/sentinel-usecase-deployment/tests) (specifically [`test_validation.py`](https://github.com/86sunbot/fde-lab/blob/main/sentinel-usecase-deployment/tests/test_validation.py) verifying rejection of missing `SigninLogs`, mismatched `let` thresholds, missing entity mappings, or `enabled = True`), plus `ruff check .` (`0` errors).
+- **Known Limitations:**
+  - `validation/structural.py` and `validation/detection.py` perform **static and semantic string/regex validation** against the supported V1 pattern catalogue; they do **not** compile KQL against the Microsoft Kusto engine or execute queries against a live Azure Log Analytics workspace.
+  - This public module is the frozen V1 baseline limited to the Entra ID single-IP password spray pattern; multi-table detection specifications and live workspace grounding are covered in the private case studies below.
+
+### Contribution and Third-Party Attribution
+- **My Contribution:** Designed and implemented the `DetectionRuleProposal` / `DetectionRule` models (`models.py`), the `SigninLogs` password-spray KQL rule (`reference_proposer.py`), the two-layer validator (`structural.py`, `detection.py`), the Sentinel Scheduled payload serializer (`sentinel_payload.py`), and the 28-test `pytest` suite.
+- **Third-Party Attribution:** Uses standard open-source Python packages (`pydantic`, `pytest`, `ruff`); contains no third-party detection content.
 
 ---
 
