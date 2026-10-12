@@ -34,11 +34,11 @@ flowchart LR
 flowchart TD
     subgraph ControlPlanes ["Enterprise AI/DR Control-Plane Comparison (microsoft_vs_crowdstrike_ai_dr_guide.md)"]
         direction LR
-        MS["Microsoft Security Stack: Entra Agent ID + Conditional Access, Purview Endpoint DLP + DSPM for AI, Prompt Shields + Defender BehaviorInfo, Sentinel + Security Copilot + APIM Quotas"]
-        CS["CrowdStrike Falcon Stack: Falcon Identity Service-Account Monitoring, Falcon Data Security, Falcon AIDR + Kernel-Level Falcon Guardian, Next-Gen SIEM + Charlotte AI + Token Counts"]
+        MS["Microsoft Security Stack: Entra Agent ID + Conditional Access, Purview Endpoint DLP + DSPM for AI, Prompt Shields + Defender BehaviorInfo, Sentinel + Security Copilot + APIM Quotas"] ---|"Architectural Trade-Off Analysis"| CS["CrowdStrike Falcon Stack: Falcon Identity Service-Account Monitoring, Falcon Data Security, Falcon AIDR + Kernel-Level Falcon Guardian, Next-Gen SIEM + Charlotte AI + Token Counts"]
     end
 
     subgraph RAGService ["Executable RAG Service Security Boundary (v3-enterprise-assistant)"]
+        direction LR
         Client["Streamlit UI / API Consumer"] -->|"Authorization: Bearer API_KEY"| Auth["require_api_key (secrets.compare_digest + SHA-256 client_id)"]
         Auth -->|"Per-Client-ID Sliding Window"| RL["InMemoryRateLimiter / enforce_rate_limit (HTTP 429 + Retry-After)"]
         RL -->|"Pydantic Schema & Length Bounds"| Engine["OpenAI Embeddings + InMemoryVectorStore + Lexical Reranker"]
