@@ -21,12 +21,82 @@ flowchart LR
 
 ---
 
-## 1. AI-Assisted Microsoft Sentinel Detection Engineering Agent (`ai-agent-usecase-deployment` V3.4)
+## 1. Public Flagship Example: Governed AI Sentinel Rule-Generation Workflow (`fde-lab/sentinel-usecase-deployment`)
 
-- **Visitor Access:** **Public case study with implementation currently private** (`86sunbot/ai-agent-usecase-deployment` V3.4 is currently private and scheduled for Stage C clean-companion release; an early V1 password-spray prototype has **public source and demo instructions** in [`86sunbot/fde-lab/tree/main/sentinel-usecase-deployment`](https://github.com/86sunbot/fde-lab/tree/main/sentinel-usecase-deployment)).
+- **Visitor Access:** **Public source and demo instructions available now** in [`86sunbot/fde-lab/sentinel-usecase-deployment`](https://github.com/86sunbot/fde-lab/tree/main/sentinel-usecase-deployment) ([`workflow.py`](https://github.com/86sunbot/fde-lab/blob/main/sentinel-usecase-deployment/src/sentinel_usecase/workflow.py), [`openai_proposer.py`](https://github.com/86sunbot/fde-lab/blob/main/sentinel-usecase-deployment/src/sentinel_usecase/agent/openai_proposer.py), [`gateway.py`](https://github.com/86sunbot/fde-lab/blob/main/sentinel-usecase-deployment/src/sentinel_usecase/deployment/gateway.py), and [`Deploy-SentinelUseCases.ps1`](https://github.com/86sunbot/fde-lab/blob/main/sentinel-usecase-deployment/scripts/Deploy-SentinelUseCases.ps1)).
+
+### Problem and Intended Users
+- **Problem:** Giving an LLM direct tool access to create or enable SIEM detection rules in Microsoft Sentinel risks deploying invalid KQL, bypassing peer review, or triggering alert storms. Security operations teams need an agent workflow where the LLM can only propose structured candidate artifacts, deterministic code enforces validation and single-pass repair, human operators must explicitly approve (`ApprovalDecision.APPROVE`), and deployment gateways re-validate artifacts and enforce `enabled = False` before invoking Azure deployment scripts.
+- **Intended Users:** AI Security Engineers, SecOps Architects, and Detection Engineering Teams building human-governed AI workflows.
+
+### Architecture Diagram
+```mermaid
+flowchart TD
+    Req["1. Analyst Natural-Language Request<br/>(UseCaseWorkflow.create_bundle)"] --> Route{"Pattern Supported?<br/>(Entra ID Password Spray)"}
+    Route -->|"No"| Unsupported["Fail Closed: STATUS_UNSUPPORTED<br/>(No LLM Call or Deployment)"]
+    Route -->|"Yes"| Propose["2. Untrusted Proposal Layer<br/>(OpenAIUseCaseProposer or ReferenceUseCaseProposer)<br/>• No tool execution permissions"]
+    Propose --> Validate1["3. Deterministic Two-Layer Validation<br/>(validate_artifact: structural.py + detection.py)"]
+    Validate1 -->|"Passed == False"| Repair["Single-Pass Repair Attempt<br/>(proposer.repair with validation errors)"]
+    Repair --> Validate2["Re-Validate Candidate"]
+    Validate1 -->|"Passed == True"| Pending["STATUS_PENDING_APPROVAL<br/>(Artifact Bundle Written to Disk)"]
+    Validate2 -->|"Passed == True"| Pending
+    Validate2 -->|"Passed == False"| Failed["STATUS_VALIDATION_FAILED<br/>(Blocked from Approval/Deploy)"]
+    Pending --> Human["4. Human Review Gate<br/>(UseCaseWorkflow.record_approval)"]
+    Human -->|"ApprovalDecision.APPROVE"| Gateway["5. DeploymentGateway.deploy (gateway.py)<br/>• Verifies approval == APPROVE<br/>• Re-runs validate_artifact(artifact)<br/>• Asserts artifact.enabled is False<br/>• Runs PowerShell Preview before -Apply"]
+```
+
+### Representative Artifacts Visitors Can Inspect Now
+1. **Workflow Orchestrator & Single-Pass Repair (`workflow.py`):**
+   - [**`fde-lab/sentinel-usecase-deployment/src/sentinel_usecase/workflow.py`**](https://github.com/86sunbot/fde-lab/blob/main/sentinel-usecase-deployment/src/sentinel_usecase/workflow.py) — Implements `create_bundle()`, single-pass `proposer.repair()`, `record_approval()`, and `deploy()`.
+2. **Pre-Deployment Gate & Mandatory Disabled-State Enforcement (`gateway.py`):**
+   - [**`fde-lab/sentinel-usecase-deployment/src/sentinel_usecase/deployment/gateway.py`**](https://github.com/86sunbot/fde-lab/blob/main/sentinel-usecase-deployment/src/sentinel_usecase/deployment/gateway.py) — Enforces five explicit pre-deployment checks before calling `Deploy-SentinelUseCases.ps1`:
+   ```python
+   if approval is None:
+       raise DeploymentBlockedError("Deployment is blocked until human approval is recorded.")
+   if approval.decision != ApprovalDecision.APPROVE:
+       raise DeploymentBlockedError(
+           f"Deployment is blocked because the approval decision is '{approval.decision.value}'."
+       )
+   validation = validate_artifact(artifact)
+   if not validation.passed:
+       raise DeploymentBlockedError("Deployment is blocked because validation failed on re-check.")
+   if artifact.enabled is not False:
+       raise DeploymentBlockedError("Deployment is blocked because rules must remain disabled.")
+   ```
+3. **Additional Publicly Inspectable Regulated-Workflow Prototypes:**
+   - [**`86sunbot/FDE-Final-Capstone`**](https://github.com/86sunbot/FDE-Final-Capstone) — CGT patient-to-batch orchestration console (`118` `pytest` tests, fail-closed `satisfied`/`not-satisfied`/`unknown` gates, bitemporal history, SHA-256 hash-chained SQLite audit log).
+   - [**`86sunbot/caldera-monitoring-triage`**](https://github.com/86sunbot/caldera-monitoring-triage) — Clinical monitoring report triage prototype (`9` `pytest` tests on `main`; `10` Python + `3` TypeScript checks on [Draft PR #1](https://github.com/86sunbot/caldera-monitoring-triage/pull/1)).
+
+### Setup and Reproduction Instructions
+```bash
+git clone https://github.com/86sunbot/fde-lab.git
+cd fde-lab/sentinel-usecase-deployment
+python3 -m venv .venv && source .venv/bin/activate
+pip install -r requirements.txt -r requirements-dev.txt
+ruff check .
+PYTHONPATH=src pytest -q tests
+# Run end-to-end offline bundle creation + human approval + dry-run preview
+python run.py create "Create a password spray detection for Entra ID sign-in logs" --offline-reference
+```
+
+### Validation Evidence and Known Limitations
+- **Validation Evidence:** **`28` automated `pytest` tests defined and passing (`28 passed in 0.04s`)** in [`sentinel-usecase-deployment/tests/`](https://github.com/86sunbot/fde-lab/tree/main/sentinel-usecase-deployment/tests), including [`test_workflow.py`](https://github.com/86sunbot/fde-lab/blob/main/sentinel-usecase-deployment/tests/test_workflow.py) (testing unsupported request fail-closed behavior, single-pass LLM repair, and approval state transitions) and [`test_deployment_gateway.py`](https://github.com/86sunbot/fde-lab/blob/main/sentinel-usecase-deployment/tests/test_deployment_gateway.py) (testing rejection of unapproved, rejected, tampered, or `enabled=True` rules, and verifying that live apply requires a prior preview pass). Wired into CI on [Draft PR #4](https://github.com/86sunbot/fde-lab/pull/4).
+- **Known Limitations:**
+  - The public `fde-lab/sentinel-usecase-deployment` package is the frozen **V1 baseline** supporting only the Entra ID single-IP password spray pattern and PowerShell deployment (`Deploy-SentinelUseCases.ps1`).
+  - Live OpenAI proposal generation (`OpenAIUseCaseProposer`) requires `OPENAI_API_KEY`, and live Sentinel rule creation requires `pwsh`, the `Az` PowerShell modules, and an authenticated Azure subscription; offline verification uses `--offline-reference` and mocked subprocess runners.
+
+### Contribution and Third-Party Attribution
+- **My Contribution:** Designed and implemented `UseCaseWorkflow`, `OpenAIUseCaseProposer`, `ReferenceUseCaseProposer`, `DeploymentGateway`, `Deploy-SentinelUseCases.ps1`, and the 28-test `pytest` suite.
+- **Third-Party Attribution:** Uses standard open-source libraries (`openai`, `pydantic`, `pytest`, `ruff`); contains no third-party templates or proprietary code.
+
+---
+
+## 2. AI-Assisted Microsoft Sentinel Detection Engineering Agent (`ai-agent-usecase-deployment` V3.4 — Private Case Study)
+
+- **Visitor Access:** **Public case study with V3.4 implementation currently private** (`86sunbot/ai-agent-usecase-deployment` V3.4 is currently private and scheduled for Stage C clean-companion release; the V1 baseline above is **publicly inspectable now** in [`86sunbot/fde-lab/tree/main/sentinel-usecase-deployment`](https://github.com/86sunbot/fde-lab/tree/main/sentinel-usecase-deployment)).
 
 ### Problem and Audience
-- **Problem:** Translating threat intelligence or business detection requirements into Microsoft Sentinel analytics rules is slow and error-prone when done manually, yet deploying raw LLM-generated KQL directly to a SIEM introduces broken field references, noisy alert storms, and ungoverned configuration drift.
+- **Problem:** Extending the V1 single-pattern prototype to arbitrary enterprise detection requirements requires live Log Analytics workspace schema discovery, multi-table KQL generation, historical backtesting, and cryptographic readiness verification before deployment.
 - **Audience:** Detection Engineers, SecOps Architects, and AI Security Engineering Teams.
 
 ### Current Capabilities (Documented in Case Study)
@@ -48,11 +118,10 @@ flowchart LR
 
 ### Canonical Source & Access Status
 - **Access Status:** **Public case study with V3.4 implementation currently private** (`86sunbot/ai-agent-usecase-deployment`, prepared on local branch `portfolio/remediation-2026-10` at commit `c8bb1c7`; scheduled for clean-companion public release in Stage C).
-- **Historical V1 Baseline (Public Source & Demo Instructions):** An early V1 snapshot (`2026-08-16`) has **public source and demo instructions** in [`86sunbot/fde-lab/tree/main/sentinel-usecase-deployment`](https://github.com/86sunbot/fde-lab/tree/main/sentinel-usecase-deployment).
 
 ---
 
-## 2. Cell & Gene Therapy (CGT) Patient-to-Batch Orchestration (`FDE-Final-Capstone`)
+## 3. Cell & Gene Therapy (CGT) Patient-to-Batch Orchestration (`FDE-Final-Capstone`)
 
 - **Visitor Access:** **Public source and demo instructions** ([`86sunbot/FDE-Final-Capstone`](https://github.com/86sunbot/FDE-Final-Capstone)).
 
@@ -86,15 +155,15 @@ flowchart LR
 
 ---
 
-## 3. Clinical Monitoring Report Triage Prototype (`caldera-monitoring-triage`)
+## 4. Clinical Monitoring Report Triage Prototype (`caldera-monitoring-triage`)
 
-- **Visitor Access:** **Public source and demo instructions** ([`86sunbot/caldera-monitoring-triage`](https://github.com/86sunbot/caldera-monitoring-triage) · [Scoped Slice Overview](https://github.com/86sunbot/caldera-monitoring-triage#1-todays-scoped-slice-locked-at-0915) · [Sprint Walkthrough](https://github.com/86sunbot/caldera-monitoring-triage/blob/main/docs/FDE_SPRINT_STORY_AND_WALKTHROUGH.md) · [10-Minute Demo Script](https://github.com/86sunbot/caldera-monitoring-triage/blob/main/docs/DEMO_PRESENTATION_SCRIPT.md)).
+- **Visitor Access:** **Public source and demo instructions** ([`86sunbot/caldera-monitoring-triage`](https://github.com/86sunbot/caldera-monitoring-triage) · [Draft PR #1](https://github.com/86sunbot/caldera-monitoring-triage/pull/1) · [Sprint Walkthrough](https://github.com/86sunbot/caldera-monitoring-triage/blob/main/docs/FDE_SPRINT_STORY_AND_WALKTHROUGH.md) · [10-Minute Demo Script](https://github.com/86sunbot/caldera-monitoring-triage/blob/main/docs/DEMO_PRESENTATION_SCRIPT.md)).
 
 ### Problem and Audience
 - **Problem:** Clinical trial study managers reviewing multi-page site monitoring reports face cognitive overload when manually triaging potential protocol deviations, overdue follow-up items, and site risk patterns—especially when upstream eTMF or site-registry services experience partial outages.
 - **Audience:** AI Application Engineers, Regulated-Domain Product Teams, and FDE Reviewers.
 
-### Current Capabilities (Public `main` Branch)
+### Current Capabilities (Public `main` Branch & Review PR #1)
 - **Pre-GxP Cognitive Surfacing Architecture ([`ADR-001`](https://github.com/86sunbot/caldera-monitoring-triage/blob/main/docs/governance/decisions/ADR-001-surfacing-vs-predictive.md)):** Deliberately scoped as a non-binding, human-reviewed surfacing worksheet outside the GxP system-of-record boundary (`CandidateObservation.check_forbidden_fields` rejects `score`, `risk_level`, `priority`, `severity`, `rank`, and `deviation_confirmed`).
 - **Verbatim Source Attribution (`SourceCitation` in `src/models.py` & `src/pipeline/extractor.py`):** Every surfaced observation records `document_id`, `page_number`, and `verbatim_sentence` extracted from the report page text (`report.pages`), grouped by site and theme into a `SameThemeAcrossVisitsView`.
 - **Three Operational Resilience Controls ("Curveballs"):**
@@ -106,20 +175,19 @@ flowchart LR
 - **Public FDE Sprint Prototype (Dual Python + TypeScript/React Implementation · License Selection Pending):** Interactive web prototype (`npm run dev` via `tsx server.ts` and `src/App.tsx`) and Python pipeline (`src/pipeline/triage_graph.py`) operating over 20 synthetic monitoring reports (`data/sample_reports/twenty_reports.json`).
 
 ### Evidence and Limitations
-- **Public `main` Automated Tests (`eeac9b9`):**
-  - **Python Automated Tests (`9` defined in `tests/` / `9` executed and passed via `pytest tests/ -v --tb=short`):** Covers regional restriction gating, EDC boundary enforcement, forbidden-score rejection, verbatim sentence/page provenance, Google AI Studio unconfigured fallback, 20-report end-to-end slice execution, and HTTP 500 eTMF / Site Registry degradation in `.github/workflows/ci.yml`.
-  - **TypeScript Web Application (`package.json`):** Provides `npm run dev` (`tsx server.ts`), `npm run lint` (`tsc --noEmit`), and `npm run build` (`vite build` + `esbuild server.ts`).
-- **Known Limitations on Public `main`:**
+- **Public `main` (`eeac9b9`) vs. Review Draft PR #1 (`7c7d6e7`):**
+  - **Public `main` Automated Tests (`9` defined / `9` passed via `pytest tests/ -v --tb=short`):** Covers regional restriction gating, EDC boundary enforcement, forbidden-score rejection, verbatim sentence/page provenance, Google AI Studio unconfigured fallback, 20-report end-to-end slice execution, and HTTP 500 eTMF / Site Registry degradation.
+  - **Review Draft PR #1 ([`pull/1`](https://github.com/86sunbot/caldera-monitoring-triage/pull/1)):** Adds negative citation-provenance regression tests (`10` `pytest` tests total), automated TypeScript Curveball 1–3 verification (`scripts/verify_ts_controls.ts`), `npm run lint`, and `npm run build` in GitHub Actions, and removes the obsolete `src/main.py` reference from the README.
+- **Known Limitations:**
   - **Not a GxP-validated system:** Per [`ADR-001`](https://github.com/86sunbot/caldera-monitoring-triage/blob/main/docs/governance/decisions/ADR-001-surfacing-vs-predictive.md), the prototype sits *outside* 21 CFR Part 11 / GxP validation as an unrecorded cognitive aid.
-  - **Placeholder CLI reference in public docs:** `README.md` (`#3-repository-architecture`) and `docs/google_ai_studio_setup.md` on public `main` mention `src/main.py`, which is not present in `src/`; the public repository runs via `npm run dev` (web server) or `pytest tests/ -v --tb=short` (Python pipeline test suite).
-  - **In-memory execution:** Outputs are returned in-memory rather than persisted to WORM storage. *(Additional negative citation-substring checks and TypeScript CI steps have been prepared locally on an unpushed branch and are not yet published to `main`).*
+  - **In-memory execution:** Outputs are returned in-memory rather than persisted to WORM storage.
 
 ### Canonical Source & Access Status
-- **Access Status:** **Public source and demo instructions** ([**`https://github.com/86sunbot/caldera-monitoring-triage`**](https://github.com/86sunbot/caldera-monitoring-triage) · [Sprint Walkthrough](https://github.com/86sunbot/caldera-monitoring-triage/blob/main/docs/FDE_SPRINT_STORY_AND_WALKTHROUGH.md) · [10-Minute Demo Script](https://github.com/86sunbot/caldera-monitoring-triage/blob/main/docs/DEMO_PRESENTATION_SCRIPT.md) · [`docs/governance/risk-register.md`](https://github.com/86sunbot/caldera-monitoring-triage/blob/main/docs/governance/risk-register.md)).
+- **Access Status:** **Public source and demo instructions** ([**`https://github.com/86sunbot/caldera-monitoring-triage`**](https://github.com/86sunbot/caldera-monitoring-triage) · [Draft PR #1](https://github.com/86sunbot/caldera-monitoring-triage/pull/1)).
 
 ---
 
-## 4. AI Security Lab (`ai-security-lab`)
+## 5. AI Security Lab (`ai-security-lab` — Private Case Study)
 
 - **Visitor Access:** **Public case study with implementation currently private** (`86sunbot/ai-security-lab` is currently private and scheduled for Stage C public release).
 
@@ -137,36 +205,7 @@ flowchart LR
 
 ### Evidence and Limitations
 - **Validation Scope & Documented Pattern Scan:** No automated test suite is defined in this documentation repository; embedded Python snippets were syntax-checked via `ast.parse`, and regex pattern scans across `HEAD` and Git history detected no credentials or personal Azure GUIDs.
-- **Known Limitations:** Documentation and reference patterns only; for an executable RAG implementation with public source and automated tests, see `fde-lab/document-assistant/versions/v3-enterprise-assistant`.
+- **Known Limitations:** Documentation and reference patterns only; for an executable RAG implementation with public source and automated tests, see [`fde-lab/document-assistant/versions/v3-enterprise-assistant`](security-architecture.md#1-public-flagship-example-enterprise-aidr-architecture-comparison--rag-security-boundary-fde-lab).
 
 ### Canonical Source & Access Status
 - **Access Status:** **Public case study with implementation currently private** (`86sunbot/ai-security-lab`, prepared on local branch `portfolio/remediation-2026-10` at commit `d9a4f2a` — Stage C candidate).
-
----
-
-## 5. Forward Deployed Engineering Lab & AI/DR Architecture Comparison (`fde-lab`)
-
-- **Visitor Access:** **Public source and demo instructions** ([`86sunbot/fde-lab`](https://github.com/86sunbot/fde-lab)).
-
-### Problem and Audience
-- **Problem:** Practitioners need concrete comparisons of enterprise AI/Detection & Response platforms and progressive examples showing how a simple retrieval prototype evolves into a tested service with explicit API contracts.
-- **Audience:** Security Architects, FDE Practitioners, and Applied AI Engineers.
-
-### Current Capabilities (Public `main` Branch)
-- **Enterprise AI/DR Architecture Comparison ([`microsoft_vs_crowdstrike_ai_dr_guide.md`](https://github.com/86sunbot/fde-lab/blob/main/microsoft_vs_crowdstrike_ai_dr_guide.md)):** 491-line comparative analysis of **Microsoft Defender XDR + Sentinel + Security Copilot** vs. **CrowdStrike Falcon + Charlotte AI**, evaluating telemetry architecture, SIEM data-lake economics, identity protection (MDI vs. Falcon Identity), cloud security (Defender for Cloud vs. Falcon Cloud Security), and agentic SOC workflows.
-- **Document Assistant Progression ([`document-assistant/versions/`](https://github.com/86sunbot/fde-lab/tree/main/document-assistant/versions)):**
-  - `v1-retrieval`: Local TF-IDF baseline over PDF chunks.
-  - `v2-ai-assistant`: OpenAI RAG integration with C4 architecture diagrams and ADRs (`ADR-001`..`ADR-004`).
-  - [`v3-enterprise-assistant`](https://github.com/86sunbot/fde-lab/tree/main/document-assistant/versions/v3-enterprise-assistant): Decoupled FastAPI backend (`app/`) + Streamlit frontend (`frontend/`), local vector snapshot, Docker Compose setup (`docker compose up --build`), evaluation harness (`evals/cases.json`), and **32 automated tests** across 9 test files run via `python3 -m pytest`.
-- **Sentinel Use-Case Deployment V1 Baseline ([`sentinel-usecase-deployment/`](https://github.com/86sunbot/fde-lab/tree/main/sentinel-usecase-deployment)):** Historical V1 snapshot (`2026-08-16`) of the password-spray KQL generator (`python run.py create "Create a password spray detection" --offline-reference`) with **28 automated tests** across 5 test files run via `pytest` (subsequently expanded into the standalone V3.4 repository [`ai-agent-usecase-deployment`](#1-ai-assisted-microsoft-sentinel-detection-engineering-agent-ai-agent-usecase-deployment-v34)).
-
-### Maturity / Status
-- **Public Multi-Project Engineering Lab & Architecture Comparison Repository (Locally Tested · License Selection Pending Owner Confirmation):** Publicly accessible on GitHub.
-
-### Evidence and Limitations
-- **Defined vs. Executed Automated Tests:** **`60` automated tests are defined on public `main` (`6d1566a`) and pass locally via `pytest` (`60 passed`)** across the two test suites (**`32 passed`** + `ruff check .` in `document-assistant/versions/v3-enterprise-assistant/`, which is wired into `.github/workflows/v3-ci.yml` on public `main`, and **`28 passed`** + `ruff check .` in `sentinel-usecase-deployment/`, with a dual-component CI workflow prepared on a local unpushed branch). Note that `v1-retrieval` and `v2-ai-assistant` are earlier stage snapshots without standalone CI test suites.
-- **Third-Party Test Fixture & Redistribution Note:** The sample PDF in `fde-lab` (`document.pdf` inside `document-assistant/versions/v2-ai-assistant/` and `v3-enterprise-assistant/`, and `Microsoft Defender for Identity _ Microsoft Learn.pdf` at the repo root on public `main`) is a 4-page print-to-PDF of Microsoft Learn documentation (*"Microsoft Defender for Identity Overview"*). Excluding `document.pdf` from an `MIT` code license does **not** by itself establish a right to redistribute Microsoft documentation; replacing `document.pdf` with a self-authored synthetic PDF fixture (or confirming Microsoft Learn CC/redistribution terms) is recommended before applying a final repository license.
-
-### Canonical Source & Access Status
-- **Access Status:** **Public source and demo instructions** ([**`https://github.com/86sunbot/fde-lab`**](https://github.com/86sunbot/fde-lab)).
-- **Architecture Comparison Direct Link:** [**`Enterprise AI/DR: Microsoft Security vs. CrowdStrike Falcon`**](https://github.com/86sunbot/fde-lab/blob/main/microsoft_vs_crowdstrike_ai_dr_guide.md)

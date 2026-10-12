@@ -17,11 +17,100 @@ flowchart LR
     C --> D["4. SOAR & SecOps Automation: security-automation (Managed Identity Logic Apps)"]
 ```
 
-> **Related AI Agent Work:** For my **AI-Assisted Microsoft Sentinel Detection Engineering Agent (`ai-agent-usecase-deployment` V3.4)**—which automates telemetry discovery, KQL generation, deterministic validation, historical backtesting, and human-approved deployment—see its primary case study in [**`ai-agents.md#1-ai-assisted-microsoft-sentinel-detection-engineering-agent-ai-agent-usecase-deployment-v34`**](ai-agents.md#1-ai-assisted-microsoft-sentinel-detection-engineering-agent-ai-agent-usecase-deployment-v34).
+> **Related AI Agent Work:** For the governed agent workflow that wraps this KQL detection and validator (`workflow.py`, `gateway.py`) and its multi-table V3.4 evolution (`ai-agent-usecase-deployment`), see [**`ai-agents.md#1-public-flagship-example-governed-ai-sentinel-rule-generation-workflow-fde-labsentinel-usecase-deployment`**](ai-agents.md#1-public-flagship-example-governed-ai-sentinel-rule-generation-workflow-fde-labsentinel-usecase-deployment).
 
 ---
 
-## 1. Sentinel Log Validation Agent (`Sentinel-Log-Validation-Agent`)
+## 1. Public Flagship Example: Entra ID Password Spray KQL Detection & Two-Layer Validator (`fde-lab/sentinel-usecase-deployment`)
+
+- **Visitor Access:** **Public source and demo instructions available now** in [`86sunbot/fde-lab/sentinel-usecase-deployment`](https://github.com/86sunbot/fde-lab/tree/main/sentinel-usecase-deployment) ([`reference_proposer.py`](https://github.com/86sunbot/fde-lab/blob/main/sentinel-usecase-deployment/src/sentinel_usecase/agent/reference_proposer.py), [`structural.py`](https://github.com/86sunbot/fde-lab/blob/main/sentinel-usecase-deployment/src/sentinel_usecase/validation/structural.py), [`detection.py`](https://github.com/86sunbot/fde-lab/blob/main/sentinel-usecase-deployment/src/sentinel_usecase/validation/detection.py), and [`sentinel_payload.py`](https://github.com/86sunbot/fde-lab/blob/main/sentinel-usecase-deployment/src/sentinel_usecase/deployment/sentinel_payload.py)).
+
+### Problem and Intended Users
+- **Problem:** Detection engineers writing Microsoft Sentinel Scheduled analytics rules for identity attacks (such as single-IP password spraying against `SigninLogs`) must ensure that parameterized KQL thresholds match rule metadata, required output columns (`IPCustomEntity`, `AccountCustomEntity`) exist for incident entity mapping, destructive KQL operators are blocked, and newly generated rules cannot be deployed in an active state before shadow-mode tuning.
+- **Intended Users:** Microsoft Sentinel Detection Engineers, Threat Hunters, and SecOps Engineers.
+
+### Architecture Diagram
+```mermaid
+flowchart LR
+    A["Candidate UseCaseArtifact<br/>(reference_proposer.py)"] --> B["Layer 1: Structural Validator<br/>(validation/structural.py)<br/>• Enforces enabled == False<br/>• Blocks .create / .drop / externaldata<br/>• Verifies required tables & fields<br/>• Checks entity columns in KQL"]
+    B --> C["Layer 2: Detection Validator<br/>(validation/detection.py)<br/>• Verifies SigninLogs + ResultType != 0<br/>• Verifies dcount(UserPrincipalName)<br/>• Matches let thresholds to parameters<br/>• Enforces 3+ false-positive scenarios"]
+    C --> D["Sentinel Scheduled Rule Payload<br/>(deployment/sentinel_payload.py)<br/>• PT15M frequency / PT15M period<br/>• IP + Account entityMappings<br/>• enabled = False invariant"]
+```
+
+### Representative Artifact Visitors Can Inspect Now
+The complete Scheduled KQL analytics rule and entity mappings below are publicly inspectable in [**`fde-lab/sentinel-usecase-deployment/src/sentinel_usecase/agent/reference_proposer.py`**](https://github.com/86sunbot/fde-lab/blob/main/sentinel-usecase-deployment/src/sentinel_usecase/agent/reference_proposer.py):
+
+```kql
+let DetectionWindow = 15m;
+let MinimumDistinctAccounts = 10;
+let MinimumFailedAttempts = 20;
+let SprayCandidates =
+    SigninLogs
+    | where TimeGenerated >= ago(DetectionWindow)
+    | where isnotempty(IPAddress) and isnotempty(UserPrincipalName)
+    | where ResultType != "0"
+    | extend NormalizedUserPrincipalName = tolower(UserPrincipalName)
+    | summarize
+        StartTimeUtc = min(TimeGenerated),
+        EndTimeUtc = max(TimeGenerated),
+        FailedAttempts = count(),
+        TargetedAccountCount = dcount(NormalizedUserPrincipalName),
+        SampleAccounts = make_set(NormalizedUserPrincipalName, 25),
+        SampleApplications = make_set(AppDisplayName, 10),
+        FailureCodes = make_set(tostring(ResultType), 10)
+      by IPAddress;
+SprayCandidates
+| where TargetedAccountCount >= MinimumDistinctAccounts and FailedAttempts >= MinimumFailedAttempts
+| mv-expand TargetAccount = SampleAccounts to typeof(string)
+| extend
+    AccountName = tostring(split(TargetAccount, "@")[0]),
+    UPNSuffix = tostring(split(TargetAccount, "@")[1]),
+    IPCustomEntity = IPAddress,
+    AccountCustomEntity = TargetAccount
+| project
+    StartTimeUtc,
+    EndTimeUtc,
+    IPAddress,
+    IPCustomEntity,
+    TargetAccount,
+    AccountCustomEntity,
+    AccountName,
+    UPNSuffix,
+    TargetedAccountCount,
+    FailedAttempts,
+    FailureCodes,
+    SampleApplications
+```
+
+- **MITRE ATT&CK v14 Mapping:** `CredentialAccess` — `T1110` (*Brute Force*), `T1110.003` (*Password Spraying*).
+- **Entity Mappings (`entityMappings`):** Maps `IP` (`Address -> IPCustomEntity`) and `Account` (`Name -> AccountName`, `UPNSuffix -> UPNSuffix`).
+- **Two-Layer Validator Source:** Inspect [`validation/structural.py`](https://github.com/86sunbot/fde-lab/blob/main/sentinel-usecase-deployment/src/sentinel_usecase/validation/structural.py) and [`validation/detection.py`](https://github.com/86sunbot/fde-lab/blob/main/sentinel-usecase-deployment/src/sentinel_usecase/validation/detection.py).
+
+### Setup and Reproduction Instructions
+```bash
+git clone https://github.com/86sunbot/fde-lab.git
+cd fde-lab/sentinel-usecase-deployment
+python3 -m venv .venv && source .venv/bin/activate
+pip install -r requirements.txt -r requirements-dev.txt
+ruff check .
+PYTHONPATH=src pytest -q tests
+# Generate the validated offline reference bundle in artifacts/<use_case_id>/
+python run.py create "Create a password spray detection for Entra ID sign-in logs" --offline-reference
+```
+
+### Validation Evidence and Known Limitations
+- **Validation Evidence:** **`28` automated `pytest` tests defined and passing (`28 passed in 0.04s`)** across 5 test modules in [`sentinel-usecase-deployment/tests/`](https://github.com/86sunbot/fde-lab/tree/main/sentinel-usecase-deployment/tests) (specifically [`test_validation.py`](https://github.com/86sunbot/fde-lab/blob/main/sentinel-usecase-deployment/tests/test_validation.py) verifying rejection of missing `SigninLogs`, mismatched `let` thresholds, missing entity mappings, or `enabled = True`), plus `ruff check .` (`0` errors).
+- **Known Limitations:**
+  - `validation/structural.py` and `validation/detection.py` perform **static and semantic string/regex validation** against the supported V1 pattern catalogue; they do **not** compile KQL against the Microsoft Kusto engine or execute queries against a live Azure Log Analytics workspace.
+  - This public module is the frozen V1 baseline limited to the Entra ID single-IP password spray pattern; multi-table detection specifications and live workspace grounding are covered in the private case studies below.
+
+### Contribution and Third-Party Attribution
+- **My Contribution:** Designed and implemented the `UseCaseArtifact` schema, the `SigninLogs` password-spray KQL rule (`reference_proposer.py`), the two-layer validator (`structural.py`, `detection.py`), the Sentinel Scheduled payload serializer (`sentinel_payload.py`), and the 28-test `pytest` suite.
+- **Third-Party Attribution:** Uses standard open-source Python packages (`pydantic`, `pytest`, `ruff`); contains no third-party detection content.
+
+---
+
+## 2. Sentinel Log Validation Agent (`Sentinel-Log-Validation-Agent`)
 
 - **Visitor Access:** **Public case study with implementation currently private** (`86sunbot/Sentinel-Log-Validation-Agent` is currently private and scheduled for Stage B clean-history companion release).
 
@@ -52,7 +141,7 @@ flowchart LR
 
 ---
 
-## 2. Sentinel-as-a-Service — Greenfield Deployment Kit & Orchestrator (`Sentinel-as-a-Service`)
+## 3. Sentinel-as-a-Service — Greenfield Deployment Kit & Orchestrator (`Sentinel-as-a-Service`)
 
 - **Visitor Access:** **Public case study with implementation currently private** (`86sunbot/Sentinel-as-a-Service` is currently private).
 
@@ -88,7 +177,7 @@ flowchart LR
 
 ---
 
-## 3. Sentinel Detection Engineering Library (`sentinel-detection-engineering`)
+## 4. Sentinel Detection Engineering Library (`sentinel-detection-engineering`)
 
 - **Visitor Access:** **Public case study with implementation currently private** (`86sunbot/sentinel-detection-engineering` is currently private and scheduled for Stage B public release).
 
@@ -124,7 +213,7 @@ flowchart LR
 
 ---
 
-## 4. Security Operations Automation Toolkit (`security-automation`)
+## 5. Security Operations Automation Toolkit (`security-automation`)
 
 - **Visitor Access:** **Public case study with implementation currently private** (`86sunbot/security-automation` is currently private).
 
